@@ -27,6 +27,10 @@ AGENCIES = {
         'code': 'PANT',
         'url': 'http://panturist-turizam.hr/',
     },
+    'Globtour': {
+        'code': 'GLOB',
+        'url': 'https://www.globtour.com',
+    }
 }
 
 ROUTE_TYPE = 3  # Bus
