@@ -11,31 +11,19 @@ DEFAULT_OUTPUT_FILE = 'GTFS_output.zip'
 DEFAULT_MAX_SEGMENTS = 1
 
 AGENCIES = {
-    'Autopromet d.d. Slunj': {
-        'code': 'ASLU',
-        'url': 'http://www.autopromet.hr/',
+    'UIVO': {
+        'code': 'UIVO',
+        'url': 'https://union-ivkoni.com/',
          },
-    'Autotrans d.d.': {
-        'code': 'AUTT',
-        'url': 'https://vollo.hr/autobus/prijevoznik/autotrans',
-        },
-    'App d.d. Požega': {
-        'code': 'APOE',
-        'url': 'https://www.putovnica.net/prijevoz/app-pozega',
-        },
-    'Panturist d.d. Osijek': {
-        'code': 'PANT',
-        'url': 'http://panturist-turizam.hr/',
-    },
-    'Globtour': {
-        'code': 'GLOB',
-        'url': 'https://www.globtour.com',
-    }
+    'UIVK': {
+        'code': 'UIVK',
+        'url': 'https://union-ivkoni.com/',
+         },
 }
 
 ROUTE_TYPE = 3  # Bus
 PAYMENT_METHOD = 1  # paid before boarding
-TIMEZONE = 'Europe/Zagreb'
+TIMEZONE = 'Europe/Sofia'
 CURRENCY_TYPE = 'EUR'
 
 Agency = namedtuple('Agency', ['agency_id', 'agency_name', 'agency_url', 'agency_timezone'])
@@ -99,21 +87,27 @@ def read_schedule_from_file(filename):
 
 def process_schedule(schedule, valid_agencies, max_segments):
     for record in schedule:
-        if record.prijevoznik not in valid_agencies:
+        if record.carrier not in valid_agencies:
             continue
-        if int(record.broj_segmenata) > max_segments:
+        if int(record.segments) > max_segments:
             continue
 
-        departure = datetime.strptime(record.polazak, '%b  %d %Y  %I:%M%p')
-        arrival = datetime.strptime(record.dolazak, '%b  %d %Y  %I:%M%p')
+        agency_id = valid_agencies.get(record.carrier).get('code')
+        try:
+            get_stop_id_by_place_code(record.departure_station, agency_id)
+            get_stop_id_by_place_code(record.arrival_station, agency_id)
+        except KeyError:
+            continue
+
+        departure = datetime.strptime(record.departure_time, '%Y-%m-%d %H:%M:%S %z')
+        arrival = datetime.strptime(record.arrival_time, '%Y-%m-%d %H:%M:%S %z')
         departure_date = departure.strftime('%Y%m%d')
         departure_time = departure.strftime('%H:%M')
         arrival_time = arrival.strftime('%H:%M')
 
-        agency_id = valid_agencies.get(record.prijevoznik).get('code')
-        route_id = '_'.join((agency_id, record.id_ulaz, record.id_izlaz, record.cijena))
-        fare_id = '_'.join((agency_id, record.cijena))
-        trip_id = '_'.join((agency_id, record.id_ulaz, departure_time, record.id_izlaz, arrival_time))
+        route_id = '_'.join((agency_id, record.departure_station, record.arrival_station, record.price))
+        fare_id = '_'.join((agency_id, record.price))
+        trip_id = '_'.join((agency_id, record.departure_station, departure_time, record.arrival_station, arrival_time))
 
         update_agencies(agency_id, record)
         update_routes(route_id, agency_id, record)
@@ -125,10 +119,7 @@ def process_schedule(schedule, valid_agencies, max_segments):
 
 
 def get_stop_id_by_place_code(place_code, agency_id):
-    try:
-        stop_id = place_codes[place_code][agency_id]
-    except KeyError:
-        stop_id = next(iter(place_codes[place_code].values()))  # any agency with that code
+    stop_id = place_codes[place_code][agency_id]
     return stop_id
 
 
@@ -154,8 +145,8 @@ def update_agencies(agency_id, record):
     if agency_id not in agencies:
         agency = Agency(
             agency_id=agency_id,
-            agency_name=record.prijevoznik,
-            agency_url=AGENCIES.get(record.prijevoznik).get('url'),
+            agency_name=record.carrier,
+            agency_url=AGENCIES.get(record.carrier).get('url'),
             agency_timezone=TIMEZONE,
         )
         agencies[agency_id] = agency
@@ -163,15 +154,15 @@ def update_agencies(agency_id, record):
 
 def update_routes(route_id, agency_id, record):
     if route_id not in routes:
-        departure_stop_id = get_stop_id_by_place_code(record.id_ulaz, agency_id)
-        arrival_stop_id = get_stop_id_by_place_code(record.id_izlaz, agency_id)
+        departure_stop_id = get_stop_id_by_place_code(record.departure_station, agency_id)
+        arrival_stop_id = get_stop_id_by_place_code(record.arrival_station, agency_id)
         departure_stop_name = stops.get(departure_stop_id).stop_name
         arrival_stop_name = stops.get(arrival_stop_id).stop_name
         route = Route(
             route_id=route_id,
             agency_id=agency_id,
             route_short_name='',
-            route_long_name=f'{departure_stop_name} - {arrival_stop_name} for {record.cijena} by {record.prijevoznik}',
+            route_long_name=f'{departure_stop_name} - {arrival_stop_name} for {record.price} by {record.carrier}',
             route_type=ROUTE_TYPE,
         )
         routes[route_id] = route
@@ -190,9 +181,9 @@ def update_fare_attributes(fare_id, agency_id, record):
     if fare_id not in fare_attributes:
         fare_attribute = Fare_attribute(
             fare_id=fare_id,
-            price=float(record.cijena),
+            price=float(record.price),
             currency_type=CURRENCY_TYPE,
-            payment_method=PAYMENT_METHOD,  
+            payment_method=PAYMENT_METHOD,
             transfers='',
             agency_id=agency_id,
         )
@@ -218,22 +209,23 @@ def update_calendar_dates(service_id, departure_date):
     calendar_dates[service_id].add(calendar_date)
 
 
-def add_24_hours(time):
-    """ Add 24 hours to time, e.g. 12:34:00 -> 36:34:00 """
+def add_hours(time, number_of_days):
+    """ Add 24*N hours to time, e.g. 12:34:00 -> 36:34:00 """
     hours, minutes, seconds = time.split(':')
-    hours = str(int(hours) + 24)
+    hours = str(int(hours) + 24*number_of_days)
     return ':'.join((hours, minutes, seconds))
 
 
 def update_stop_times(trip_id, agency_id, departure, arrival, record):
     if trip_id not in stop_times:
-        departure_stop_id = get_stop_id_by_place_code(record.id_ulaz, agency_id)
-        arrival_stop_id = get_stop_id_by_place_code(record.id_izlaz, agency_id)
+        departure_stop_id = get_stop_id_by_place_code(record.departure_station, agency_id)
+        arrival_stop_id = get_stop_id_by_place_code(record.arrival_station, agency_id)
 
         departure_time = departure.strftime('%H:%M:%S')
         arrival_time = arrival.strftime('%H:%M:%S')
         if arrival.date() > departure.date():
-            arrival_time = add_24_hours(arrival_time)
+            days_to_add = (arrival.date() - departure.date()).days
+            arrival_time = add_hours(arrival_time, days_to_add)
 
         # two different stop times for starting and ending points of the route
         departure_stop_time = Stop_time(
