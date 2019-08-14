@@ -1,5 +1,5 @@
 from collections import namedtuple, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import csv
 import zipfile
@@ -9,6 +9,7 @@ DEFAULT_STOPS_FILE = 'stops.csv'
 DEFAULT_SCHEDULE_FILE = 'Schedule.csv'
 DEFAULT_OUTPUT_FILE = 'GTFS_output.zip'
 DEFAULT_MAX_SEGMENTS = 1
+DEFAULT_FEED_DAYS = 90
 
 AGENCIES = {
     'UIVO': {
@@ -85,13 +86,14 @@ def read_schedule_from_file(filename):
     return schedule
 
 
-def process_schedule(schedule, valid_agencies, max_segments):
+def process_schedule(schedule, valid_agencies, max_segments, cutoff_date):
     for record in schedule:
         if record.carrier not in valid_agencies:
             continue
         if int(record.segments) > max_segments:
             continue
 
+        # filter nonexistent stops
         agency_id = valid_agencies.get(record.carrier).get('code')
         try:
             get_stop_id_by_place_code(record.departure_station, agency_id)
@@ -99,8 +101,12 @@ def process_schedule(schedule, valid_agencies, max_segments):
         except KeyError:
             continue
 
+        # filter trips that happen more than [feed_days] days from today
         departure = datetime.strptime(record.departure_time, '%Y-%m-%d %H:%M:%S %z')
         arrival = datetime.strptime(record.arrival_time, '%Y-%m-%d %H:%M:%S %z')
+        if arrival.date() > cutoff_date or departure.date() > cutoff_date:
+            continue
+
         departure_date = departure.strftime('%Y%m%d')
         departure_time = departure.strftime('%H:%M')
         arrival_time = arrival.strftime('%H:%M')
@@ -273,8 +279,8 @@ def save_dict_to_file(data_dict, headers, filename):
 def main():
     parser = argparse.ArgumentParser(
         description='GTFS converter',
-        usage="""gtfs.py -stops stops_file -schedule schedule_file -o archive -max_segments N -agencies 'Agency1, ...'
-    """)
+        usage="gtfs.py [-stops stops_file] [-schedule schedule_file] [-o archive] "
+              "[-max_segments N] [-feed_days M] -agencies 'Agency1, ...' ")
     parser.add_argument('-stops', dest="stops_file", action="store", metavar='stops_file',
                         type=str, help=".csv file with stops information")
     parser.add_argument('-schedule', dest="schedule_file", action="store", metavar='schedule_file',
@@ -283,23 +289,27 @@ def main():
                         help='output GTFS archive')
     parser.add_argument('-max_segments', metavar='max_segments', type=int,
                         help='Maximum amount of segments in trip')
+    parser.add_argument('-feed_days', metavar='feed_days', type=int,
+                        help='Feed length in days, starting from now')
     parser.add_argument('-agencies', metavar='valid_agencies', type=str, required=True,
                         help='List of valid agency codes ("ASLU, AUTT, APOE, PANT")')
     options = parser.parse_args()
-
-    agencies_list = [agency.strip().upper() for agency in options.agencies.split(',')]
-    valid_agencies = {key: value for key, value in AGENCIES.items() if value.get('code') in agencies_list}
 
     stops_file = options.stops_file if options.stops_file else DEFAULT_STOPS_FILE
     schedule_file = options.schedule_file if options.schedule_file else DEFAULT_SCHEDULE_FILE
     output_file = options.output_file if options.output_file else DEFAULT_OUTPUT_FILE
     max_segments = options.max_segments if options.max_segments else DEFAULT_MAX_SEGMENTS
+    feed_length_in_days = options.feed_days if options.feed_days else DEFAULT_FEED_DAYS
+
+    agencies_list = [agency.strip().upper() for agency in options.agencies.split(',')]
+    valid_agencies = {key: value for key, value in AGENCIES.items() if value.get('code') in agencies_list}
+    cutoff_date = (datetime.now()+timedelta(days=feed_length_in_days)).date()
 
     raw_stops = read_stops_from_file(stops_file)
     process_stops(raw_stops)
 
     schedule = read_schedule_from_file(schedule_file)
-    process_schedule(schedule, valid_agencies, max_segments)
+    process_schedule(schedule, valid_agencies, max_segments, cutoff_date)
     filtered_stops = filter_stops(stops)
 
     files = [
